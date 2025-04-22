@@ -1,0 +1,102 @@
+settings:
+  notificationSlackChannel: ""
+
+environments:
+  l3:
+    name: L3
+  l2:
+    name: L2
+  l1:
+    name: L1
+
+modules:
+  stack:
+    name: progen-erp-service
+    path: /
+    pipelines:
+
+      build:
+        name: progen-erp-service Build
+        type: build
+        spec:
+          architecture: arm64
+          resources:
+            cpu: "4"
+            memory: 8Gi
+          artifact:
+            type: docker
+            spec:
+              context: /
+              dockerfile: Dockerfile
+              repoName: progen-erp-service
+          triggers:
+            - name: Build and Deploy
+              enabled: true
+              type: commit
+              pushArtifact: true
+              triggerDeployment: true
+              spec:
+                branch: main
+                condition:
+                  type: Regex
+                  value: ^(?!\.harness/)(?!terraform/).*
+
+      docker:
+        name: progen-erp-service Deploy Local Docker
+        type: deployment
+        spec:
+          buildPipeline: build
+          type: custom
+          spec:
+            steps:
+              - name: Blue-Green Swap
+                spec:
+                  image: docker:latest
+                  imageSource: base
+                  command: |
+                    echo "Starting Blue-Green Deployment"
+                    chmod +x ./scripts/deploy_blue_green.sh
+                    ./scripts/deploy_blue_green.sh
+
+            environments:
+              l3:
+                name: L3
+                primary:
+                  approveDeployment: false
+                  hooks:
+                    - type: container
+                      step: PostDeploy
+                      spec:
+                        resources:
+                          cpu: 2
+                          memory: 4Gi
+                        mounts:
+                          - type: git
+                            spec:
+                              sparsePaths:
+                                - .harness/
+                                - post_deployment/
+                        steps:
+                          - name: Run Odoo UI web assets generation
+                            spec:
+                              image: python:3.11
+                              imageSource: base
+                              command: |-
+                                set -e
+                                echo "Running post-deployment script..."
+                                python post_deployment/run_post_deploy.py
+
+              l2:
+                name: L2
+                primary:
+                  approveDeployment: true
+
+              l1:
+                name: L1
+                smoke: {}
+                canary: {}
+                primary:
+                  approveDeployment: true
+                  approveTeardown: false
+                defaults:
+                  approveTeardown: true
